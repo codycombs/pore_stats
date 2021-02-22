@@ -1,12 +1,9 @@
 """
-
 OPTICAL_IMAGING.py
-
 * Contains tools for manipulating image files, and creating and detecting OpticalEvents
 * An OpticalEvent is a sequence of single particle detections that have been
   identified as belonging to the same physical particle.
 *
-
 * Sections:
     1. Imports
     2. Constants
@@ -47,6 +44,10 @@ import scipy.ndimage
 import math
 import IPython.display
 import skimage.measure
+import time
+from skimage.morphology import *
+from skimage.filters import threshold_otsu
+import image_processing as ip
 
 """
 Constants
@@ -361,7 +362,7 @@ class Stage:
 
         self._origin = (self._c0 + self._c1)/2.#self._center - self._length/2.*self._norm_x
 
-    def pixels_to_meters(self, length):
+    def pixels_to_meters(self, length,camera = 0):
         """
         * Description: Converts a distance to units of meters. Based on the length
         of the channel in pixels and the known length of the channel in meters.
@@ -370,7 +371,13 @@ class Stage:
             - length: The length to be converted
         """
 
-        return 1.*np.array(length)*self._length_microns/self._length
+        #Conversion measured using ruler for 10x mag 
+        if camera == 0:
+
+            return 1.*np.array(length)*(100./383)
+        else:
+            return 1.*np.array(length)*(self._length_microns/self._length)
+
 
     def meters_to_pixels(self, length):
 
@@ -738,31 +745,45 @@ def find_clusters_iterative_percentage_based(frame, template_frame, threshold_di
     return clusters
 
 def find_clusters_skimage(frame, template_frame, threshold_difference = .01,
-                    cluster_threshold = 20, diag = False, negative_direction = 'abs'):
+                    cluster_threshold = 20, diag = False, 
+                    negative_direction = 'abs',dsize=20,grad=False,sigma = 3):
     '''
     Find clusters using the skimage.measure.label function
     '''
 
-
+ 
     # Create threshold frame
     if negative_direction == 'abs':
         negative_frame = abs(frame - template_frame)
-    elif negative_direction == 'pos':
-        negative_frame = frame - template_frame
     elif negative_direction == 'neg':
+        negative_frame = frame - template_frame
+    elif negative_direction == 'pos':
         negative_frame = template_frame - frame
 
-    threshold_frame = np.copy(negative_frame)
-    threshold_frame[threshold_frame < threshold_difference] = 0
-    threshold_frame[threshold_frame >= threshold_difference] = 1
+    if grad == True:
+        negative_frame = ip.gradient(negative_frame)
 
+    negative_frame = ip.normalize(negative_frame)
+    #threshold_difference = threshold_otsu(negative_frame)
+    threshold_frame = ip.gaussian_threshold(negative_frame,sigma_multiplier = sigma)
+    #threshold_frame = np.copy(negative_frame>threshold_difference)*1
+    '''
+    Hack to skip frames without cells. 0.2 was chosen by eye
+    '''
+    #if threshold_frame.mean()>0.2:
+        #return []
+    
+    #threshold_frame = binary_closing(threshold_frame,disk(dsize))
 
+    #threshold_frame = dilation(threshold_frame,disk(dsize))
+    #threshold_frame = erosion(threshold_frame,disk(dsize))
+  
     # Perform the clustering
     clusters = []
     connectivity = 2*diag + 1*(not diag)
     label_frame = skimage.measure.label(threshold_frame, connectivity = connectivity)
     labels = np.unique(label_frame)
-
+ 
     background_label = 0
     max_length = 0
     for label in labels:
@@ -770,20 +791,18 @@ def find_clusters_skimage(frame, template_frame, threshold_difference = .01,
         if length > max_length:
             max_length = length
             background_label = label
-
+ 
     for label in labels:
         if label != background_label:
             cluster = np.where(label_frame == label)
 
             clusters.append(np.hstack((cluster[0].reshape(-1,1), cluster[1].reshape(-1,1))))
 
-
-
-
+    
     # Remove all clusters that are too short
     clusters = [cluster for cluster in clusters if cluster.shape[0] > cluster_threshold]
 
-
+   
 
     return clusters
 
@@ -1192,8 +1211,10 @@ def connect_loose_events(events_, tf_sep_threshold = 5, dist_threshold = 20):
     return events
 
 
-def find_events(vid, ti = 0, tf = -1, threshold_difference = .0375,
- cluster_threshold = 20, template_frame = None, diag = True, blur = False, kernel = None, connect = False, connect_threshold = 0, negative_direction = 'abs', normalize = False):
+def find_events(vid, ti = 0, tf = -1, threshold_difference = .0375, chronos = False,
+ cluster_threshold = 20, template_frame = None, diag = True, blur = False, 
+ kernel = None, connect = False, connect_threshold = 0, 
+ negative_direction = 'abs', normalize = False,grad=False,radius=20,sigma=1):
     """
     * Description: Finds all events within optical imaging data. An event
       is defined as the entrance and exit of a particle (represented as a
@@ -1226,6 +1247,7 @@ def find_events(vid, ti = 0, tf = -1, threshold_difference = .0375,
     if normalize == True:
         template_frame = template_frame/np.mean(template_frame)
 
+    
     active_events=[]
     inactive_events=[]
 
@@ -1243,7 +1265,10 @@ def find_events(vid, ti = 0, tf = -1, threshold_difference = .0375,
     for t in xrange(ti, tf):
 
         # Get the frame from the video
-        frame = vid.get_frame(t)
+        if chronos == True:
+            frame = vid.get_frame(t,camera=0)
+        else:
+            frame = vid.get_frame(t,camera=1)
 
         # Image transformations on the frame
         #frame = change_frame_contrast(frame, alpha = alpha, beta = beta)
@@ -1253,19 +1278,24 @@ def find_events(vid, ti = 0, tf = -1, threshold_difference = .0375,
         if normalize:
             frame = frame/np.mean(frame)
 
+        #frame = ip.crop_border(frame,crop,crop)
+
         try:
             # Look for clusters in the frame
 
 
             #Custom clustering algorithm
-            #clusters = find_clusters_skimage(
-                                   #frame, template_frame,
-                                   #threshold_difference = threshold_difference,
-                                   #cluster_threshold = cluster_threshold, diag = diag, negative_direction = negative_direction)
+            clusters = find_clusters_skimage(
+                                   frame, template_frame,
+                                   threshold_difference = threshold_difference,
+                                   cluster_threshold = cluster_threshold, diag = diag, 
+                                   negative_direction = negative_direction,dsize=radius,sigma=sigma,
+                                   grad=grad)
 
-            clusters = find_clusters_iterative_percentage_based(frame, template_frame,
-             threshold_difference = threshold_difference, cluster_threshold = cluster_threshold, diag = diag,
-              connect = False, connect_threshold = connect_threshold, negative_direction = negative_direction)
+            #clusters = find_clusters_skimage(frame, template_frame,
+             #threshold_difference = threshold_difference, cluster_threshold = cluster_threshold, diag = diag,
+              #connect = False, connect_threshold = connect_threshold, negative_direction = negative_direction)
+
 
 
         except:
@@ -1365,15 +1395,12 @@ OLD/OBSOLETE CODE
 """
 
 """
-
 def plot_frame_number(vid, tf):
-
     * Description: Plots the tf'th frame from video source vid
     * Return: None
     * Arguments:
         - vid: imageio video source
         - tf: Integer value of frame to plot (Int)
-
     fig=plt.figure(figsize=(10,8))
     frame = get_frame_vid(vid, tf)
     plt.imshow(frame, cmap='gray')
@@ -1381,9 +1408,7 @@ def plot_frame_number(vid, tf):
     plt.ylim(0, frame.shape[0])
     plt.show()
     return
-
 def plot_highlighted_frame(frame, cluster_list):
-
     * Description: Alters frame so pixels within cluster_list clusters are
       highlighted green
     * Return: None
@@ -1391,15 +1416,11 @@ def plot_highlighted_frame(frame, cluster_list):
         - frame: frame to highlight clusters in
         - cluster_list: List of pixel clusters (e.g. obtained from
           'find_clusters')
-
-
     new_frame = np.empty((frame.shape[0], frame.shape[1], 3), dtype=float)
     for i in range(new_frame.shape[0]):
         for j in range(new_frame.shape[1]):
             for k in range(new_frame.shape[2]):
                 new_frame[i,j,k]=frame[i,j]
-
-
     for cluster in cluster_list:
         for k in xrange(len(cluster)):
             i = cluster[k,0]
@@ -1407,17 +1428,12 @@ def plot_highlighted_frame(frame, cluster_list):
             #new_frame[i,j,0] =  0#frame[i,j]/1.  # R
             #new_frame[i,j,1] = 1.#frame[i,j]*5.
             #new_frame[i,j,2] =  0#frame[i,j]/1.                 # B
-
     fig = plt.figure(figsize = (10, 8))
     plt.imshow(new_frame, vmin = 0, vmax = 1)
-
     plt.xlim(0, frame.shape[1])
     plt.ylim(0, frame.shape[0])
-
     plt.show()
-
     return
-
 """
 
 
@@ -1426,13 +1442,9 @@ def plot_highlighted_frame(frame, cluster_list):
 
 
 """
-
-
-
 def find_events_vid(file_name, threshold_difference = 30, cluster_threshold = 20,
                 tf_start = -1, tf_stop = -1, template_frame = None,
                 sigma = None, alpha = None, beta = None, blur = True):
-
     * Description: Finds all events within optical imaging data. An event
       is defined as the entrance and exit of a particle (represented as a
       cluster of pixels) from the 'stage'.
@@ -1447,65 +1459,45 @@ def find_events_vid(file_name, threshold_difference = 30, cluster_threshold = 20
           at first frame if left default)
         - tf_stop (optional): Frame index at which to end search (will stop at
           last frame if left default)
-
     # Open video connection
     vid = open_video_connection(file_name)
-
     # Get start and stop frame numbers
     if tf_start == -1:
         tf_start = 0
     if tf_stop == -1:
         tf_stop = vid._meta['nframes']
-
     # Define template frame
     if template_frame == None:
         template_frame = get_frame(vid, tf_start)
     template_frame = change_frame_contrast(template_frame, alpha)
     if blur == True:
         frame = cv2.GaussianBlur(frame, (5,5), 0)
-
     active_events=[]
     inactive_events=[]
-
     # Search frames for clusters
     for tf in xrange(tf_start+1, tf_stop):
-
         frame = get_frame(vid, tf)
         frame = change_frame_contrast(frame, alpha)
         if blur == True:
             frame = cv2.GaussianBlur(frame, (5,5), 0)
-
-
         clusters = find_clusters_percentage_based(
                                    frame, template_frame,
                                    threshold_difference = threshold_difference,
                                    cluster_threshold = cluster_threshold)
-
-
-
         detections = [OpticalDetection(tf, cluster) for cluster in
                               clusters]
-
         if tf % 100 == 0:
             print 'tf: ', tf, '/', tf_stop, '\tnum detections:', len(detections), '\tnum clusters:', len(clusters)
-
         active_events, inactive_events = match_events_to_detections(
                                              active_events, inactive_events,
                                              detections, tf)
-
     # Append all events that are still active by last frame to inactive_events
     # list
     for active_event in active_events:
         inactive_events.append(active_event)
-
-
     return inactive_events
-
-
-
 def find_events_bvi(filepath, threshold_difference = .0375, cluster_threshold = 20,
                 tf_start = -1, tf_stop = -1, template_frame = None):
-
     * Description: Finds all events within optical imaging data. An event
       is defined as the entrance and exit of a particle (represented as a
       cluster of pixels) from the 'stage'.
@@ -1520,19 +1512,11 @@ def find_events_bvi(filepath, threshold_difference = .0375, cluster_threshold = 
           at first frame if left default)
         - tf_stop (optional): Frame index at which to end search (will stop at
           last frame if left default)
-
-
-
     # Open video connection
     filehandle = open(filepath, 'rb')
-
-
-
     dim0 = 128#128
     dim1 = 256#256
-
     bytes_per_frame = 4*dim0*dim1
-
     # Get start and stop frame numbers
     if tf_start == -1:
         tf_start = 0
@@ -1540,67 +1524,41 @@ def find_events_bvi(filepath, threshold_difference = .0375, cluster_threshold = 
         size = os.path.getsize(filepath)
         tf_stop = int(size/(dim0*dim1*4))
         #tf_stop = oi_file.get_filelength_bvi(filepath)
-
     # Define template frame
-
     data = np.memmap(filepath, mode = 'r', dtype = 'float32', offset = 12+tf_start*bytes_per_frame,\
      shape = (tf_stop-tf_start, dim0, dim1))
-
     if template_frame == None:
         template_frame = copy.copy(data[0,:,:])
-
-
     active_events=[]
     inactive_events=[]
-
-
     events = []
     # Search frames for clusters
     for tf in xrange(tf_start+1, tf_stop):
-
         frame = data[tf-tf_start,:,:]
         if tf == tf_start + 1:
             print frame, frame.shape
-
-
-
-
         clusters = find_clusters_percentage_based(
                                    frame, template_frame,
                                    threshold_difference = threshold_difference,
                                    cluster_threshold = cluster_threshold)
-
-
-
         detections = [OpticalDetection(tf, cluster) for cluster in
                               clusters]
-
         if tf % 100 == 0:
             print 'tf: ', tf, '/', tf_stop, '\tclusters:', len(clusters), '\tactive:', len(active_events), '\tinactive:', len(inactive_events)
         #new_events = [OpticalEvent([detection]) for detection in detections]
         active_events, inactive_events = match_events_to_detections(
                                              active_events, inactive_events,
                                              detections, tf)
-
         #events = connect_loose_events(events + new_events)
-
-
-
     # Append all events that are still active by last frame to inactive_events
     # list
     for active_event in active_events:
         inactive_events.append(active_event)
-
-
     return inactive_events
     #return events
-
-
-
 """
 """
 def get_frame_vid(vid, tf):
-
     * Description: Gets the nth frame of data from video stream. Converts pixel
       RGB values to type Int.
     * Return: Frame data (2-D numpy array of RGB pixel data scaled to range [0,1)
@@ -1609,132 +1567,86 @@ def get_frame_vid(vid, tf):
         - vid: Video connection established by imageio class (use
           'open_video_connection') to get
         - tf: Number of desired frame to retrieved
-
     frame=np.array(vid.get_data(tf)[:,:,0])/255.
-
     return frame
-
 def preprocess_video(vid, output_file_name, sigma, alpha, beta = 'avg'):
     writer = imageio.get_writer(output_file_name, fps = 30)
-
     tf_start = 0
     tf_stop = vid._meta['nframes']
-
     if beta == 'avg':
         frame = get_frame(vid,0)
         beta = frame.sum()/(frame.shape[0]*frame.shape[1])
-
     for tf in xrange(0, tf_stop):
         frame = get_frame(vid,tf)
         frame = frame*alpha + (.5-beta)
         writer.append_data(frame)
-
     writer.close()
-
     return
-
-
-
-
 def change_frame_contrast(frame, alpha, beta):
     frame = frame*alpha + beta
     return frame
-
 def preprocess_frame(frame, sigma, alpha, beta):
     # Gaussian filter
     if sigma != None and sigma != 0:
         frame = gaussian_filter(frame, sigma = sigma)
-
     frame = frame*alpha + beta
-
     return frame
-
-
-
-
-
 def match_events_to_detections(active_events, inactive_events,
                                detections, tf):
-
     stage_boundary = 350
     distance_threshold = 10
-
     new_active_events = []
-
     # Create, fill distance_matrix
     distance_matrix = np.zeros((len(detections)+1, len(active_events)+1),
                                dtype = float)
-
     for i in range(distance_matrix.shape[0]):
         distance_matrix[i,0] = i - 1
     for j in range(distance_matrix.shape[1]):
         distance_matrix[0,j] = j - 1
-
     for i in range(1, len(detections) + 1):
         for j in range(1, len(active_events) + 1):
             xi = detections[i-1]._px
-
             yi = detections[i-1]._py
-
             xj = (active_events[j-1]._detections[-1]._px +
                   active_events[j-1]._detections[-1]._pvx *
                   (tf - active_events[j-1]._detections[-1]._tf))
-
-
-
             yj = (active_events[j-1]._detections[-1]._py +
                   active_events[j-1]._detections[-1]._pvy *
                   (tf - active_events[j-1]._detections[-1]._tf))
-
             distance_matrix[i,j] = ((xi - xj)**2. + (yi - yj)**2.)**.5
-
     # Match columns to row
     check_rows = [i for i in range(0, len(detections))]
-
     for j in range(0, len(active_events)):
-
         # Get index of row with minimum distance
         if check_rows != []:
             temp_min_row = np.argmin(distance_matrix
                                      [[row+1 for row in check_rows], j+1], 0)
-
             min_row = int(distance_matrix[[row+1 for row in check_rows],[0]]
                                           [temp_min_row])
-
-
             # Check to see if point still good
             # (i.e., if the minimum makes sense)
             #if (active_events[j]._detections[-1]._px >= stage_boundary and
                 #distance_matrix[min_row+1, j+1] >= distance_threshold):
                 #min_row = None
-
             if distance_matrix[min_row+1, j+1] >= distance_threshold:
                 min_row = None
-
         else:
             min_row = None
-
         # Check if match is found
         if min_row != None:
             # Remove row from check list
             check_rows = [row for row in check_rows if row != min_row]
-
             # Update the particle that is being tracked with the
             # matched particle
             active_events[j].add_detection(detections[min_row])
-
             # Add the particle to new_active_events list
             new_active_events.append(active_events[j])
-
         else:
             inactive_events.append(active_events[j])
-
     # Add rows that did not match to new_active_events
     for row in check_rows:
         new_active_events.append(OpticalEvent(detections[row]))
-
     return new_active_events, inactive_events
-
 """
 
 
@@ -1758,7 +1670,6 @@ def match_events_to_detections(active_events, inactive_events,
         - _pheight: Time-series of pixel heights of particle (list [] of Int)
     * Member functions:
         - merge_events()
-
 """
 """
     def __init__(self, tf, pixels):
@@ -1771,20 +1682,15 @@ def match_events_to_detections(active_events, inactive_events,
         self._parea = []
         self._pwidth = []
         self._pheight = []
-
         self.add_frame_data(tf, pixels)
-
         return
-
     def add_frame_data(self, tf, pixels):
         self._tf.append(tf)
         self._pixels.append(pixels)
-
         px = (pixels[:,1].max()+pixels[:,1].min())/2
         py = (pixels[:,0].max()+pixels[:,0].min())/2
         self._px.append(px)
         self._py.append(py)
-
         if len(self._tf) >= 2:
             pvx = (1.*(self._px[-1]-self._px[-2])/
                       (self._tf[-1]-self._tf[-2]))
@@ -1795,17 +1701,13 @@ def match_events_to_detections(active_events, inactive_events,
             pvy=0
         self._pvx.append(pvx)
         self._pvy.append(pvy)
-
-
         parea = len(pixels)
         pwidth = pixels[:,1].max() - pixels[:,1].min()
         pheight = pixels[:,0].max() - pixels[:,0].min()
         self._parea.append(parea)
         self._pwidth.append(pwidth)
         self._pheight.append(pheight)
-
         return
-
     def connect_event(self, optical_event):
         if self._tf[-1] < optical_event._tf[0]:
             first_event = self
@@ -1813,8 +1715,6 @@ def match_events_to_detections(active_events, inactive_events,
         else:
             first_event = optical_event
             second_event = self
-
-
         self._tf = first_event._tf + second_event._tf
         self._pixels = first_event._pixels + second_event._pixels
         self._px = first_event._px + second_event._px
@@ -1824,14 +1724,12 @@ def match_events_to_detections(active_events, inactive_events,
         self._parea = first_event._parea + second_event._parea
         self._pwidth = first_event._pwidth + second_event._pwidth
         self._pheight = first_event._pheight + second_event._pheight
-
         return
 """
 """
 def find_clusters_percentage_based(frame, template_frame,
                                    threshold_percentage_difference = 0.1,
                                    cluster_threshold = 20):
-
     * Description: Calling function to start a recursive search for
       clusters of differing pixels between a frame and template frame.
     * Return: List of pixel clusters ('cluster_list', List [] of 2-D numpy
@@ -1843,12 +1741,10 @@ def find_clusters_percentage_based(frame, template_frame,
           brightness for pixel to be flagged
         - cluster_threshold (optional): Minimum number of pixels in a cluster
           for cluster to be considered
-
     negative_frame=np.empty((frame.shape), dtype=int)
     negative_frame=abs(frame-template_frame)
     cluster_list = []
     pixel_check_array=np.ones((negative_frame.shape[0], negative_frame.shape[1]))
-
     for i in range(pixel_check_array.shape[0]):
         for j in range(pixel_check_array.shape[1]):
             if pixel_check_array[i,j]==1:
@@ -1859,10 +1755,8 @@ def find_clusters_percentage_based(frame, template_frame,
                     add_pixel_to_cluster_percentage_based
                      (negative_frame, template_frame, pixel_check_array, i, j,
                       threshold_percentage_difference))
-
                     if cluster_pixels.shape[0]>cluster_threshold:
                         cluster_list.append(cluster_pixels)
-
     return cluster_list
 """
 """
@@ -1870,7 +1764,6 @@ def add_pixel_to_cluster_percentage_based(negative_frame, template_frame, pixel_
                          threshold_percentage_difference,
                          cluster_pixels=np.empty((0,2), dtype=int),
                          direction='center'):
-
     * Description: Recursive function that will continuously absorb adjacent
       pixels into a cluster if they exceed the threshold_difference. Called
       by 'find_clusters'.
@@ -1889,14 +1782,11 @@ def add_pixel_to_cluster_percentage_based(negative_frame, template_frame, pixel_
         - cluster_pixels (optional): List containing coordinates of pixels
           that have already been added to cluster
         - direction (optional): Direction of next pixel to check
-
     cluster_pixels=np.vstack((cluster_pixels,[i,j]))
     pixel_check_array[i,j]=0
-
     # Center (first point)
     if direction == 'center':
         pixel_check_array[i,j]=0
-
     # Right
     if (direction != 'right' and j != negative_frame.shape[1] -1
         and pixel_check_array[i,j+1] == 1):
@@ -1904,7 +1794,6 @@ def add_pixel_to_cluster_percentage_based(negative_frame, template_frame, pixel_
             cluster_pixels, pixel_check_array=add_pixel_to_cluster_percentage_based(
                 negative_frame, template_frame, pixel_check_array, i, j+1, threshold_percentage_difference,
                 cluster_pixels, 'left')
-
     # Below
     if (direction != 'below' and i != negative_frame.shape[0] - 1
         and pixel_check_array[i+1,j] == 1):
@@ -1912,27 +1801,22 @@ def add_pixel_to_cluster_percentage_based(negative_frame, template_frame, pixel_
             cluster_pixels, pixel_check_array=add_pixel_to_cluster_percentage_based(
                 negative_frame, template_frame, pixel_check_array, i+1, j, threshold_percentage_difference,
                 cluster_pixels, 'above')
-
     # Left
     if direction != 'left' and j != 0 and pixel_check_array[i,j-1] == 1:
         if 1.*negative_frame[i,j-1]/(1.+template_frame[i,j-1])>=threshold_percentage_difference:
             cluster_pixels, pixel_check_array=add_pixel_to_cluster_percentage_based(
                 negative_frame, template_frame, pixel_check_array, i, j-1, threshold_percentage_difference,
                 cluster_pixels, 'right')
-
     # Above
     if direction != 'above' and i != 0 and pixel_check_array[i-1,j] == 1:
         if 1.*negative_frame[i-1,j]/(1.+template_frame[i-1,j])>=threshold_percentage_difference:
             cluster_pixels, pixel_check_array=add_pixel_to_cluster_percentage_based(
                 negative_frame, template_frame, pixel_check_array, i-1, j, threshold_percentage_difference,
                 cluster_pixels, 'below')
-
     return cluster_pixels, pixel_check_array
 """
 """
-
 def match_events(active_events, new_cluster_list, inactive_events, tf):
-
     * Description: Matches a list of cluster pixels to events from previous
       frames. This is necessary to track individual particles across frames.
     * Return: Returns two lists: list of active events and list of inactive
@@ -1945,108 +1829,74 @@ def match_events(active_events, new_cluster_list, inactive_events, tf):
         - inactive_events: The list of events that have previously occurred that
           we will append to if a particle exits the scene
         - tf: The integer value of the current frame to be analyzed
-
     stage_boundary = 350
     distance_threshold = 10
-
     new_active_events = []
-
     # Create, fill distance_matrix
     distance_matrix = np.zeros((len(new_cluster_list)+1, len(active_events)+1),
                                dtype = float)
-
     for i in range(distance_matrix.shape[0]):
         distance_matrix[i,0] = i - 1
     for j in range(distance_matrix.shape[1]):
         distance_matrix[0,j] = j - 1
-
     for i in range(1, len(new_cluster_list) + 1):
         for j in range(1, len(active_events) + 1):
             xi = int((new_cluster_list[i-1][:,1].max()+
                   new_cluster_list[i-1][:,1].min())/2)
-
             yi = int((new_cluster_list[i-1][:,0].max()+
                   new_cluster_list[i-1][:,0].min())/2)
-
             xj = int(active_events[j-1]._px[-1]+
                   active_events[j-1]._pvx[-1]*
                   (tf - active_events[j-1]._tf[-1]))
-
             yj = int(active_events[j-1]._py[-1]+
                   active_events[j-1]._pvy[-1]*
                   (tf - active_events[j-1]._tf[-1]))
-
             distance_matrix[i,j] = ((xi - xj)**2. + (yi - yj)**2.)**.5
-
     # Match columns to row
     check_rows = [i for i in range(0, len(new_cluster_list))]
-
     for j in range(0,len(active_events)):
-
         # Get index of row with minimum distance
         if check_rows != []:
             temp_min_row = np.argmin(distance_matrix
                                      [[row+1 for row in check_rows], j+1], 0)
-
             min_row = int(distance_matrix[[row+1 for row in check_rows],[0]]
                                           [temp_min_row])
-
-
             # Check to see if point still good
             # (i.e., if the minimum makes sense)
             #if (active_events[j]._px[-1] >= stage_boundary and
         #        distance_matrix[min_row+1, j+1] >= distance_threshold):
         #        min_row = None
-
             if distance_matrix[min_row+1, j+1] >= distance_threshold:
                 min_row = None
-
         else:
             min_row = None
-
         # Check if match is found
         if min_row != None:
             # Remove row from check list
             check_rows = [row for row in check_rows if row != min_row]
-
             # Update the particle that is being tracked with the
             # matched particle
             active_events[j].add_frame_data(tf,
                                             new_cluster_list[min_row])
-
             # Add the particle to new_active_events list
             new_active_events.append(active_events[j])
-
         else:
             inactive_events.append(active_events[j])
-
     # Add rows that did not match to new_active_events
     for row in check_rows:
         new_active_events.append(OpticalEvent(tf, new_cluster_list[row]))
-
     return new_active_events, inactive_events
-
-
-
-
-
-
-
 def find_events_windows(file_name, windows, threshold_difference = 30,
                         cluster_threshold = 20):
     """
 """
-
     vid = open_video_connection(file_name)
-
     template_frame = get_frame(vid, 0)
     events = []
     for i, window in enumerate(windows):
         print 'window:', i, window[0], window[1]
-
         tf_start = window[0]
         tf_stop = window[1]
-
         events = (events +
                   find_events(
                               file_name,
@@ -2055,9 +1905,7 @@ def find_events_windows(file_name, windows, threshold_difference = 30,
                               template_frame = template_frame,
                               tf_start = window[0],
                               tf_stop = window[1]))
-
     return events
-
 """
 """
 def find_clusters(frame, template_frame, threshold_difference = 15,
@@ -2080,17 +1928,13 @@ def find_clusters(frame, template_frame, threshold_difference = 15,
     negative_frame=abs(frame-template_frame)
     cluster_list = []
     pixel_check_array=np.ones((negative_frame.shape[0], negative_frame.shape[1]))
-
     for i in xrange(pixel_check_array.shape[0]):
         for j in xrange(pixel_check_array.shape[1]):
             if pixel_check_array[i,j]==1:
                 if negative_frame[i,j] >= threshold_difference:
                     cluster_pixels, pixel_check_array=add_pixel_to_cluster\
                     (negative_frame, pixel_check_array, i, j, threshold_difference)
-
                     if cluster_pixels.shape[0]>cluster_threshold:
                         cluster_list.append(cluster_pixels)
-
     return cluster_list
-
 """

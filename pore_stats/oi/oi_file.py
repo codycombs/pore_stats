@@ -32,15 +32,20 @@ import matplotlib.animation
 
 # CV
 import cv2
+#PIL
+from PIL import *
 
 
 
-
-data_base_path = '/home/prestonh/Desktop/Research/cancer_cells/data/'
-ellipse_base_path = '/home/prestonh/Desktop/Research/cancer_cells/analysis/data/'
-
+#data_base_path = '/home/prestonh/Desktop/Research/cancer_cells/data/'
+#ellipse_base_path = '/home/prestonh/Desktop/Research/cancer_cells/analysis/data/'
 
 
+# Video, events, stage
+data_base_path = 'C:\\Users\\codyt\\Documents\\cell_data\\data\\'
+
+# Ellipse data
+ellipse_base_path = 'C:\\Users\\codyt\\Documents\\cell_data\\analysis\\'
 
 
 
@@ -58,46 +63,85 @@ class Video():
     """
 
     def __init__(self, file_path, image_width, image_height,
-                 fps = 0, exp_time = 0):
+                 fps = 0, exp_time = 0, camera = 0):
         self._file_path = file_path
         self._file_handle = open(file_path, 'rb')
         self._image_width = image_width
         self._image_height = image_height
-        self._bytes_per_frame = self._image_width * self._image_height
+
+        #Chronos raw shot in 16bpp has two bytes per pixel
+        if camera == 0:
+            self._bytes_per_frame = 2*self._image_width * self._image_height
+        else: 
+            self._bytes_per_frame = self._image_width * self._image_height
         self._fps = fps
         self._exp_time = exp_time
 
-        self._total_frames = os.path.getsize(self._file_path)/\
-        (self._image_width*self._image_height)
+        self._total_frames = os.path.getsize(self._file_path)/(self._bytes_per_frame)
 
 
-    def get_frame(self, frame, average = False, blur = False):
+    def get_frame(self, frame, average = False, blur = False,camera = 0):
+        
+        
+
+        if camera == 0:
+
+
+            self._file_handle.seek(np.int64(frame*self._bytes_per_frame))
+        
+            #rawframe = self._file_handle.read(self._bytes_per_frame*2)
+            image_array = np.fromfile(self._file_handle,dtype = np.uint16, count = self._bytes_per_frame/2)
+            frame = image_array.reshape((self._image_height,self._image_width))
+            #frame = np.asarray(Image.frombytes('F',[880,200],rawframe,'raw','F;16'))
+            #image = Image.frombuffer('I',[self._image_width,self._image_height],image_array.astype('I'),'raw','I',0,1)
+            #frame = np.asarray(image,dtype = np.float64)
+            if blur == True:
+                frame = ndi.gaussian_filter(frame, sigma=(2,2))
+
+            return frame 
+
+        else:   
+            self._file_handle.seek(int(frame*self._bytes_per_frame))
+            frame = np.fromfile(self._file_handle, dtype = np.uint8, count = self._bytes_per_frame)
+
+            # Gaussian blur the frame
+            if blur:
+                frame = cv2.GaussianBlur(frame,(5,5),0)
+
+
+            frame = frame.reshape(self._image_height, self._image_width)
+            frame = frame/255.
+
+            # Convenience function for shifting pixel values to mean
+            # Mean is determined on the boolean state of norm, either .5 or 127.5
+
+            if average == True:
+                mean = int(norm)*.5 + int(not norm)*255./2
+                frame = frame + (mean-np.mean(frame))
+                frame[frame > 1] = 1
+                frame[frame < 0] = 0
+
+
+
+
+
+            return frame
+
+    def get_frame_chronos(self, frame,blur = False):
+
         self._file_handle.seek(int(frame*self._bytes_per_frame))
-        frame = np.fromfile(self._file_handle, dtype = np.uint8, count = self._bytes_per_frame)
+        
+        #rawframe = self._file_handle.read(self._bytes_per_frame*2)
+        image_array = np.fromfile(self._file_handle,dtype = np.uint16, count = self._bytes_per_frame)
+        #frame = np.asarray(Image.frombytes('F',[880,200],rawframe,'raw','F;16'))
+        image = Image.frombuffer('I',[880,200],image_array.astype('I'),'raw','I',0,1)
+        frame = np.asarray(image,dtype = np.float32)
+        if blur == True:
+        	frame = ndi.gaussian_filter(frame, sigma=(2,2))
+
+        return frame 
 
 
-        # Gaussian blur the frame
-        if blur:
-            frame = cv2.GaussianBlur(frame,(5,5),0)
-
-
-        frame = frame.reshape(self._image_height, self._image_width)
-        frame = frame/255.
-
-        # Convenience function for shifting pixel values to mean
-        # Mean is determined on the boolean state of norm, either .5 or 127.5
-
-        if average == True:
-            mean = int(norm)*.5 + int(not norm)*255./2
-            frame = frame + (mean-np.mean(frame))
-            frame[frame > 1] = 1
-            frame[frame < 0] = 0
-
-
-
-
-
-        return frame
 
 
 
