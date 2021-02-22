@@ -3,7 +3,36 @@ import numpy as np
 import sklearn.mixture
 import optical_imaging as oi
 import scipy.ndimage
+import os
+from skimage.filters import threshold_otsu, threshold_adaptive,threshold_local
 
+def convert_mp4_to_txt(file_path):
+    try:
+        if not os.path.exists(os.path.dirname(file_path)+ '/frames'):
+            os.makedirs(os.path.dirname(file_path)+'/frames')
+    except OSError:
+        print('error: creating directory of data')
+
+    cam=cv2.VideoCapture(file_path)
+
+    with open(os.path.dirname(file_path) + '/frames/frames.txt','wb+') as f:
+        while(True):
+            ret,frame=cam.read()
+        
+            if ret:
+             frame[:,:,0].tofile(f)
+        
+            #name=data_base_path + date + particle_type + channel_type + '/oi/bin/frames/frame' + str(currentframe)+'.jpg'
+            #print("Creating..." + name)
+            #cv2.imwrite(name,frame)
+            #currentframe+=1
+        
+            else:
+                break
+        
+        
+    cam.release()
+    cv2.destroyAllWindows()
 
 def copy_frame(frame):
     return np.copy(frame)
@@ -22,6 +51,16 @@ def crop_frame(frame, x, y, crop_distance):
     cropped_frame = np.copy(frame)[y0:y1, x0:x1]
     return cropped_frame
 
+def crop_border(frame,col_crop,row_crop):
+	'''
+
+	Crop border around image. rqual from all sides. use 
+	'''
+
+	crop_frame = frame[row_crop:-row_crop,col_crop:-col_crop]
+
+	return crop_frame
+	
 def normalize(frame):
     '''
     '''
@@ -44,7 +83,7 @@ def gaussian_blur(frame, blur_kernel):
 
 
 
-def negative(frame, template_frame, direction):
+def negative(frame, template_frame, direction,block):
     '''
     Subtract the frame off of the template.
     The direction of the subtraction is determined by direction, and can be
@@ -58,6 +97,7 @@ def negative(frame, template_frame, direction):
     elif direction == 'abs':
         negative_frame = np.abs(frame - template_frame)
 
+    #negative_frame = threshold_local(negative_frame,block_size=block)
 
     return negative_frame
 
@@ -89,15 +129,11 @@ def twogaussian_threshold(frame, sigma_multiplier):
     '''
     Thresholds the frame so that all pixels above a cutoff are set to 1;
     all frames below that threshold are set to 0
-
     The cutoff level is determined by the following protocol:
-
     Two gaussians are fit to the histogram of the pixel intensities
-
     The idea is to separate a population of mostly black pixels and a separate
     population of mostly white pixels; the left Gaussian represents the dark pixels,
     the right Gaussian represents the light pixels
-
     The cutoff is set in between the two gaussians, at a distance of
     sigma_multiplier * std. dev. to the left of the bright gaussian
     '''
@@ -119,7 +155,7 @@ def twogaussian_threshold(frame, sigma_multiplier):
         index = 0
 
     threshold = means[index] - sigma_multiplier*covariances[index]**.5
-
+    thresholded_frame = np.copy(frame)
     thresholded_frame[frame < threshold] = 0
     thresholded_frame[frame > threshold] = 1
 
@@ -130,7 +166,6 @@ def gaussian_threshold(frame, sigma_multiplier):
     '''
     Threshold the pixels so that all pixels above a cutoff are set to 1, all pixels below
     that threshold are set to zero.
-
     Fits a single Gaussian to the data, and sets the cutoff to be sigma_multiplier Standard
     deviations of hte Gaussian to the right of the Gaussian's center
     '''
@@ -207,7 +242,7 @@ def morphological_closing(frame, morph_kernel):
 
 
     # Pad
-    pad_width = 20
+    pad_width = 100
     morphed_frame = np.lib.pad(frame, pad_width, 'constant')
 
     # Close
@@ -220,18 +255,35 @@ def morphological_closing(frame, morph_kernel):
 
     return morphed_frame
 
+def morphological_opening(frame, morph_kernel):
+    '''
+    Close holes in the image; for instance, if there is a cavity in the detected
+    ellipse it will fill the cavity
+    '''
+
+
+    # Pad
+    pad_width = 100
+    morphed_frame = np.lib.pad(frame, pad_width, 'constant')
+
+    # Close
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, morph_kernel)
+    morphed_frame = cv2.morphologyEx(np.array(morphed_frame, dtype = np.uint8), cv2.MORPH_OPEN, kernel)
+
+    # Unpad
+    morphed_frame = np.copy(morphed_frame[pad_width:-pad_width, pad_width:-pad_width])
+
+
+    return morphed_frame
 
 
 
 def erodesubtract(frame, iterations):
     '''
     Erode the image, and subtract the eroded image from the original image
-
     This step transforms a solid cluster of pixels into a shell of pixels around the solid
-
     Increasing hte number of itereations is useful if the highlighted pixel area
     exceeds the bounds of the actual cell itself
-
     '''
 
 
@@ -258,37 +310,18 @@ def dilatesubtract(frame, iterations):
 
 
 '''
-
-
-
-
-
-
 ###################################
 # Fit ellipse
 ###################################
-
-
 cell_pixels = np.where(processed_frame == 1)
-
-
-
-
 ellipse = oi.fit_ellipse_image_aligned(cell_pixels[1], cell_pixels[0])
-
-
 # Center
 ellipse_center = oi.get_ellipse_center(ellipse)
 ellipse_center_adjusted = [ellipse_center[0] + detection._px - crop_distance, ellipse_center[1] + detection._py - crop_distance]
-
 # Axes
 ellipse_axes_lengths = oi.get_ellipse_axes_lengths(ellipse)
-
 # Angle
 ellipse_angle = oi.get_ellipse_angle(ellipse)
-
-
-
 if debug != 'none':
     # Create perimeter line
     ellipse_points = np.empty((100,2))
@@ -298,97 +331,62 @@ if debug != 'none':
         y = ellipse_axes_lengths[1]*np.sin(angle)
         ellipse_points[i,0] = ellipse_center[0] + np.cos(ellipse_angle)*x + np.sin(ellipse_angle)*y
         ellipse_points[i,1] = ellipse_center[1] + np.sin(ellipse_angle)*x - np.cos(ellipse_angle)*y
-
     # Turn pixels green
     green_processed_frame = np.zeros((processed_frame.shape[0], processed_frame.shape[1], 3))
     green_processed_frame[:,:,1] = processed_frame
-
     # Begin plot
     fig, axes = plt.subplots(1,3,figsize = (9,3))
-
-
     # Axes 0
     plt.sca(axes[0])
-
     plt.imshow(frame, cmap = 'gray', origin = 'lower', interpolation = 'none')
     plt.imshow(np.zeros(frame.shape), alpha = 0.5, cmap = 'gray')
     plt.xlim(0, processed_frame.shape[1])
     plt.ylim(0, processed_frame.shape[0])
-
     plt.xticks([])
     plt.yticks([])
-
-
     # Axes 1
     plt.sca(axes[1])
-
     plt.imshow(frame, cmap = 'gray', origin = 'lower', interpolation = 'none')
     plt.imshow(green_processed_frame, alpha = .5, origin = 'lower', interpolation = 'none')
     #plt.plot(ellipse_points[:,0], ellipse_points[:,1], lw = 3, c = 'red')
-
     #plt.scatter(ellipse_center[0], ellipse_center[1], marker = 'x', lw = 5, color = 'red', s = 50)
-
     plt.xlim(0, processed_frame.shape[1])
     plt.ylim(0, processed_frame.shape[0])
-
     plt.xticks([])
     plt.yticks([])
-
     # Axes 2
     plt.sca(axes[2])
-
     plt.imshow(green_processed_frame, alpha = .5, origin = 'lower', interpolation = 'none')
     #plt.imshow(processed_frame, cmap = 'gray', origin = 'lower', interpolation = 'none')
     #plt.imshow(green_processed_frame, alpha = .35, origin = 'lower', interpolation = 'none', zorder = 10)
     plt.plot(ellipse_points[:,0], ellipse_points[:,1], lw = 1, ls = '--', c = 'white')
-
     #plt.scatter(ellipse_center[0], ellipse_center[1], marker = 'x', c = 'white', lw = 3, s = 20)
-
-
     ellipse_axis_a = [ellipse_axes_lengths[0]*np.cos(ellipse_angle), ellipse_axes_lengths[0]*np.sin(ellipse_angle)]
     ellipse_axis_b = [ellipse_axes_lengths[1]*np.sin(ellipse_angle), -ellipse_axes_lengths[1]*np.cos(ellipse_angle)]
-
-
     ax0 = ellipse_center[0]
     ax1 = ax0 + ellipse_axis_a[0]
     ay0 = ellipse_center[1]
     ay1 = ay0 + ellipse_axis_a[1]
-
     bx0 = ellipse_center[0]
     bx1 = bx0 + ellipse_axis_b[0]
     by0 = ellipse_center[1]
     by1 = by0 + ellipse_axis_b[1]
-
     plt.plot([ax0, ax1], [ay0, ay1], lw = 1, ls = '--', c = 'white')
     plt.plot([bx0, bx1], [by0, by1], lw = 1, ls = '--', c = 'white')
-
     #plt.text((ax0+ax1)/2., (ay0+ay1)/2., 'a', color = 'white', size = 20, ha = 'left', va = 'bottom', fontweight = 'bold')
-
-
     #plt.text((bx0+bx1)/2., (by0+by1)/2., 'b', color = 'white', size = 20, ha = 'left', va = 'bottom', fontweight = 'bold')
     plt.text(ax1 + 4, ay1, 'a', color = 'white', size = 32, ha = 'left', va = 'center', fontweight = 'bold')
     plt.text(bx1, by1 - 4, 'b', color = 'white', size = 32, ha = 'center', va = 'top', fontweight = 'bold')
-
-
-
     a_um = oi_stage.pixels_to_meters(ellipse_axes_lengths[0])
     b_um = oi_stage.pixels_to_meters(ellipse_axes_lengths[1])
-
     #plt.text(0, 0.9, r'a='+str(round(a_um,2)) + r'$\mu$m', transform=plt.gca().transAxes, ha = 'left', va = 'bottom', size = 16, color = 'white', fontweight = 'bold')
     #plt.text(0, 0.8, r'b='+str(round(b_um,2)) + r'$\mu$m', transform=plt.gca().transAxes, ha = 'left', va = 'bottom', size = 16, color = 'white', fontweight = 'bold')
     plt.text(0, 1.0, r'a/b=' + str(round(a_um/b_um, 2)), transform = plt.gca().transAxes, ha = 'left', va = 'top', size = 18, color = 'white', fontweight = 'bold')
     plt.text(0, 0.9, r'$\theta=$'+str(round(ellipse_angle*180./np.pi,3)), transform=plt.gca().transAxes, ha = 'left', va = 'top', size = 18, color = 'white', fontweight = 'bold')
-
-
-
     plt.xlim(0, processed_frame.shape[1])
     plt.ylim(0, processed_frame.shape[0])
-
     plt.xticks([])
     plt.yticks([])
-
-
     fig.tight_layout()
-
     plt.show()
 '''
