@@ -360,7 +360,7 @@ class Stage:
 
         self._origin = (self._c0 + self._c1)/2.#self._center - self._length/2.*self._norm_x
 
-    def pixels_to_meters(self, length):
+    def pixels_to_meters(self, length,camera = 0):
         """
         * Description: Converts a distance to units of meters. Based on the length
         of the channel in pixels and the known length of the channel in meters.
@@ -369,7 +369,12 @@ class Stage:
             - length: The length to be converted
         """
 
-        return 1.*np.array(length)*self._length_microns/self._length
+        #Conversion measured using ruler for 10x mag 
+        if camera == 0:
+
+            return 1.*np.array(length)*(100./383)
+        else:
+            return 1.*np.array(length)*(self._length_microns/self._length)
 
     def meters_to_pixels(self, length):
 
